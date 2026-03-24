@@ -50,18 +50,24 @@ export default function WorkflowLayout({
           break;
         case "u":
         case "U":
-          e.preventDefault();
-          onUploadTrigger?.();
+          if (e.altKey) {
+            e.preventDefault();
+            onUploadTrigger?.();
+          }
           break;
         case "c":
         case "C":
-          e.preventDefault();
-          onClean?.();
+          if (e.altKey) {
+            e.preventDefault();
+            onClean?.();
+          }
           break;
         case "d":
         case "D":
-          e.preventDefault();
-          onToggleDiff?.();
+          if (e.altKey) {
+            e.preventDefault();
+            onToggleDiff?.();
+          }
           break;
       }
     },
@@ -97,9 +103,9 @@ export default function WorkflowLayout({
       {/* Keyboard hints bar — visible at bottom */}
       <div className="flex-shrink-0 hidden md:flex items-center gap-4 px-4 py-1.5 border-t border-white/5 bg-[#080e1a]">
         {[
-          { key: "U", label: "Upload" },
-          { key: "C", label: "Clean" },
-          { key: "D", label: "Diff" },
+          { key: "Alt+U", label: "Upload" },
+          { key: "Alt+C", label: "Clean" },
+          { key: "Alt+D", label: "Diff" },
           { key: "?", label: "Help" },
         ].map(({ key, label }) => (
           <div key={key} className="flex items-center gap-1">

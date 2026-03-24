@@ -14,9 +14,9 @@ interface HelpModalProps {
 }
 
 const SHORTCUTS = [
-  { keys: ["U"], desc: "Upload a new file" },
-  { keys: ["C"], desc: "Start cleaning (Approve & Refine)" },
-  { keys: ["D"], desc: "Toggle Preview & Compare diff" },
+  { keys: ["Alt", "U"], desc: "Upload a new file" },
+  { keys: ["Alt", "C"], desc: "Start cleaning (Deploy Pipeline)" },
+  { keys: ["Alt", "D"], desc: "Toggle Preview & Compare diff" },
   { keys: ["?"], desc: "Open this help screen" },
   { keys: ["Esc"], desc: "Close dialogs / reset focus" },
   { keys: ["Enter"], desc: "Send chat message" },

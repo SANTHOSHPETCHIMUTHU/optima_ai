@@ -17,6 +17,7 @@ from utils.data_profiler import load_and_preprocess, dataset_fingerprint
 from utils.ai_client import get_openrouter_client, plan_prompt, request_plan
 from core.cleaning_engine import clean_dataframe, EngineConfig
 from core.metrics_engine import evaluate_model
+from core.knowledge_base import kb
 
 # ── CONFIGURATION ──
 load_dotenv()
@@ -27,10 +28,10 @@ app = FastAPI(title="Optima AI Backend", version="1.0.0")
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Allow requests from the Next.js frontend
+# Allow requests from the Next.js frontend (local and network IPs)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to the Vercel domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,12 +54,15 @@ class CleanRequest(BaseModel):
     fingerprint: dict
     model: str | None = None
     api_key: str | None = None
+    plan: dict | None = None           # Pre-generated plan (skips AI call if set)
+    enabled_actions: list[str] | None = None  # Subset of action types to run
 
 class ChatRequest(BaseModel):
     prompt: str
     dataset_state: str
     data_info: dict
     safe_summary: str
+    file_path: str | None = None
     model: str | None = None
     api_key: str | None = None
 
@@ -67,6 +71,15 @@ class MetricsRequest(BaseModel):
     target_column: str | None = ""
     task: str | None = ""
     model: str | None = ""
+
+class LearnRequest(BaseModel):
+    columns: list[str]
+    fix_code: str
+    description: str
+    source_file: str
+
+class VerifyRequest(BaseModel):
+    pattern_id: str
 
 # ── HELPERS ──
 def _generate_python_script(original_file_path: str, actions_applied: list, plan_actions: list) -> str:
@@ -122,6 +135,7 @@ def _generate_python_script(original_file_path: str, actions_applied: list, plan
     
     for ac in actions_applied:
         code = action_code.get(ac, f"# {ac}: applied")
+        # Check if the code looks like a learned pattern (multiple lines or custom)
         lines.append(f"# {ac}")
         for sub in code.split("\n"):
             lines.append(sub)
@@ -281,8 +295,31 @@ def clean_dataset(req: CleanRequest):
     prompt = plan_prompt(req.fingerprint)
     
     try:
-        # 1. Get the plan from AI (with multi-model fallback built-in)
-        plan, explanation = request_plan(client, prompt)
+        # 0. Check Knowledge Base for matching fix
+        learned_fix = kb.find_matching_fix(req.fingerprint)
+        used_learned_fix = False
+
+        if req.plan:
+            # Plan already generated and reviewed by the user — skip AI call
+            print("DEBUG: Using pre-generated plan from frontend")
+            plan = req.plan
+            explanation = plan.get("explanation", "Applied the reviewed cleaning plan.")
+        elif learned_fix:
+            print(f"DEBUG: Found matching KB fix ({learned_fix['id']})")
+            plan = {"actions": ["learned_pattern"]}
+            explanation = f"Matched internal knowledge pattern: {learned_fix['description']}"
+            used_learned_fix = True
+        else:
+            # 1. Get the plan from AI (with multi-model fallback built-in)
+            plan, explanation = request_plan(client, prompt)
+
+        # Filter to only enabled actions if the user toggled any off
+        if req.enabled_actions is not None and isinstance(plan.get("actions"), list):
+            plan["actions"] = [
+                a for a in plan["actions"]
+                if isinstance(a, dict) and a.get("type") in req.enabled_actions
+            ]
+            print(f"DEBUG: Filtered to {len(plan['actions'])} enabled actions: {req.enabled_actions}")
         
         # 2. Load the local raw file into Pandas
         with open(req.file_path, "rb") as f:
@@ -304,7 +341,16 @@ def clean_dataset(req: CleanRequest):
         
         # 6. Build a reproducible Python script from executed actions
         actions_applied = report.get("actions_applied", [])
-        python_script_content = _generate_python_script(req.file_path, actions_applied, plan.get("actions", []))
+        
+        # Handle learned pattern injection in code generation
+        if used_learned_fix and learned_fix:
+            python_script_content = _generate_python_script(req.file_path, [], plan.get("actions", []))
+            # Inject the custom code after imports
+            split = python_script_content.split("# ── Execute actions ──")
+            custom_block = f"# ── Execute Learned Pattern ({learned_fix['id']}) ──\n{learned_fix['fix_code']}\n"
+            python_script_content = split[0] + "# ── Execute actions ──\n" + custom_block + split[1]
+        else:
+            python_script_content = _generate_python_script(req.file_path, actions_applied, plan.get("actions", []))
 
         script_filename = f"{base_name}_cleaning_script.py"
         script_file_path = os.path.join(UPLOAD_DIR, script_filename)
@@ -313,10 +359,11 @@ def clean_dataset(req: CleanRequest):
 
         return {
             "message": "Data cleaned successfully",
-            "cleaning_report": script_filename,   # The filename
+            "cleaning_report": script_filename,
             "explanation": explanation,
-            "plan": plan,                         # The JSON plan for action cards
-            "python_code": python_script_content, # The actual code content
+            "used_kb": used_learned_fix,
+            "plan": plan,
+            "python_code": python_script_content,
             "cleaned_data": {
                 "file_path": cleaned_filename,
                 "shape": cleaned_fingerprint["shape"],
@@ -325,6 +372,22 @@ def clean_dataset(req: CleanRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during data cleaning: {str(e)}")
+
+@app.get("/api/patterns")
+def get_patterns():
+    return kb.get_all_patterns()
+
+@app.post("/api/learn")
+def learn_pattern(req: LearnRequest):
+    p_id = kb.stage_pattern(req.columns, req.fix_code, req.description, req.source_file)
+    return {"message": "Pattern staged for review", "pattern_id": p_id}
+
+@app.post("/api/verify")
+def verify_pattern(req: VerifyRequest):
+    success = kb.verify_pattern(req.pattern_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Pattern not found in staging")
+    return {"message": "Pattern verified and pushed to production KB"}
 
 @app.get("/api/download/report/{filename}")
 def download_report(filename: str):
@@ -347,6 +410,7 @@ def download_report(filename: str):
 @app.post("/api/chat")
 def chat_with_data(req: ChatRequest):
     """Streams a chat response based on the dataset profile and user prompt."""
+    print(f"DEBUG: Received chat request: {req.prompt[:50]}...")
     start_time = time.time()
     api_key = req.api_key or os.getenv("GROQ_API_KEY") or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -363,36 +427,56 @@ def chat_with_data(req: ChatRequest):
     model = req.model if req.model and req.model in SUPPORTED_MODELS else DEFAULT_MODEL
     
     client = get_openrouter_client(api_key)
-    context = f"""
-    You are 'Optima AI', an autonomous data-assistant that helps users analyze, clean, and understand their datasets.
-    Current Dataset State: {req.dataset_state}
-    
-    Data Overview: 
-    Shape: {req.data_info.get('shape')}
-    Null Counts: {req.data_info.get('null_counts')}
-    Data Types: {req.data_info.get('dtypes')}
-    
-    Detailed Summary & Safe Sample:
-    {req.safe_summary}
-    
-    Instructions:
-    1. Answer questions clearly, professionally, and insightfully.
-    2. The data sample provided is safe and has PII redacted.
-    3. Be concise but thorough. Use markdown formatting when appropriate.
-    """
+    # ── CONSTRUCT PROMPT ──
+    # Start with basic summary context
+    full_context = f"""
+You are 'Optima AI', an autonomous data-assistant that helps users analyze, clean, and understand their datasets.
+Current Dataset State: {req.dataset_state}
+
+Data Overview: 
+Shape: {req.data_info.get('shape')}
+Null Counts: {req.data_info.get('null_counts')}
+
+Detailed Summary & Safe Sample:
+{req.safe_summary}
+"""
+
+    # Add more rows from the actual file if path is provided
+    if req.file_path and os.path.exists(req.file_path):
+        try:
+            # Load first 100 rows to provide much better context than the 10-row fingerprint
+            df_full = pd.read_csv(req.file_path, nrows=100)
+            data_md = df_full.to_markdown(index=False)
+            full_context += f"\n\nREAL DATA CONTEXT (First 100 Rows):\n{data_md}"
+        except Exception as e:
+            print(f"DEBUG: Could not load full CSV for chat: {e}")
+
+    full_context += """
+Instructions:
+1. Answer questions clearly, professionally, and insightfully.
+2. The data sample provided is safe and has PII redacted.
+3. If the user asks for a data change (e.g. "remove nulls"), first explain the step, then ONLY THEN include this JSON block at the end:
+   ```json
+   {"refinement_plan": ["action_type1", "action_type2"]}
+   ```
+4. Available actions: normalize_columns, strip_whitespace, drop_empty_rows, drop_empty_cols, deduplicate, coerce_numeric, parse_dates, outliers_iqr, impute, drop_high_null_cols, standardize_categories.
+5. If the user asks about Python code or has "doubts", explain in detail in Markdown without proposing a plan.
+6. Be concise but thorough. Use markdown formatting when appropriate.
+"""
     
     try:
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": context},
+                {"role": "system", "content": full_context},
                 {"role": "user", "content": req.prompt}
-            ]
+            ],
+            temperature=0.7
         )
-        print(f"DEBUG: Chat with Data (AI) took {time.time() - start_time:.4f}s")
-        return {"reply": response.choices[0].message.content, "model_used": model}
+        return {"reply": response.choices[0].message.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Engine Error: {str(e)}")
+
 
 @app.post("/api/metrics")
 def compute_metrics(req: MetricsRequest):

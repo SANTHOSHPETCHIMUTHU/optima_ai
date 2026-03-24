@@ -57,7 +57,7 @@ const COLOR_VARIANTS: Record<string, string> = {
 interface CleaningPlanPaneProps {
   cleaningReport: string | null;
   explanation: string | null;
-  onApprove: () => void;
+  onApprove: (enabledActions: string[]) => void;
   isCleaning: boolean;
   showJsonPlan?: boolean;
   pythonCode?: string | null;
@@ -113,7 +113,13 @@ export default function CleaningPlanPane({
     });
   };
 
-  const enabledCount = actions.filter((a) => !disabled.has(a.type)).length;
+  const enabledActions = actions.filter((a) => !disabled.has(a.type));
+  const enabledCount = enabledActions.length;
+
+  /** Called when user clicks Deploy Pipeline */
+  const handleDeploy = () => {
+    onApprove(enabledActions.map(a => a.type));
+  };
 
   if (!cleaningReport) {
     return (
@@ -143,11 +149,11 @@ export default function CleaningPlanPane({
               </span>
             )}
           </div>
-          <p className="text-[10px] text-slate-500">AI-optimized data transformation</p>
+          <p className="text-[10px] text-slate-500">Toggle steps on/off, then hit Deploy to execute</p>
         </div>
 
         <button
-          onClick={onApprove}
+          onClick={handleDeploy}
           disabled={isCleaning || (actions.length > 0 && enabledCount === 0)}
           className="group relative flex items-center gap-2 px-4 py-2 text-[11px] font-bold bg-orange-600 hover:bg-orange-500 disabled:opacity-40 text-white rounded-xl transition-all shadow-xl shadow-orange-600/20 overflow-hidden"
         >
@@ -164,6 +170,7 @@ export default function CleaningPlanPane({
           )}
         </button>
       </div>
+
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto flex flex-col gap-3 custom-scrollbar pr-1">

@@ -38,6 +38,7 @@ interface ChatPanelProps {
   selectedModel: string;
   onModelChange: (m: string) => void;
   chatPlaceholder?: string;
+  onRefine?: (actions: string[]) => void;
 }
 
 /**
@@ -63,6 +64,7 @@ export default function ChatPanel({
   selectedModel,
   onModelChange,
   chatPlaceholder,
+  onRefine,
 }: ChatPanelProps) {
   // Ref points to a hidden div at the bottom of the messages list
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -133,7 +135,34 @@ export default function ChatPanel({
             >
               {msg.role === "assistant" ? (
                 // AI messages: render inline markdown (bold, code)
-                <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={renderMarkdown(msg.content)} />
+                <>
+                  <p className="whitespace-pre-wrap" dangerouslySetInnerHTML={renderMarkdown(msg.content)} />
+                  {/* Refinement detection logic */}
+                  {msg.content.includes('"refinement_plan":') && onRefine && (
+                    <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl flex flex-col gap-2">
+                       <p className="text-[11px] text-blue-300 font-medium flex items-center gap-1.5">
+                         <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                         AI detected a refinement request:
+                       </p>
+                       <button
+                         onClick={() => {
+                           try {
+                             const match = msg.content.match(/\{"refinement_plan":\s*\[(.*?)\]\}/);
+                             if (match) {
+                               const plan = JSON.parse(match[0]);
+                               onRefine(plan.refinement_plan);
+                             }
+                           } catch (e) {
+                             console.error("Failed to parse refinement plan", e);
+                           }
+                         }}
+                         className="w-full py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold rounded-lg transition-all shadow-md shadow-blue-600/20 flex items-center justify-center gap-1.5"
+                       >
+                         🚀 Apply These Changes
+                       </button>
+                    </div>
+                  )}
+                </>
               ) : (
                 // User messages: plain text
                 <p className="whitespace-pre-wrap">{msg.content}</p>

@@ -11,7 +11,19 @@ import type {
   DatasetFingerprint,
 } from "./schemas";
 
-const BASE_URL = "http://localhost:8000";
+/** 
+ * BASE_URL: Dynamic resolution to support both localhost and network IP access. 
+ * If accessed via http://10.x.x.x:3000, it hits http://10.x.x.x:8000.
+ */
+const getBaseUrl = (): string => {
+  if (typeof window !== "undefined") {
+    // Favor the current hostname so network IP access works out-of-the-box
+    return `http://${window.location.hostname}:8000`;
+  }
+  return "http://localhost:8000";
+};
+
+const BASE_URL = getBaseUrl();
 
 /** Shared error handler: reads .detail from FastAPI error responses */
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -77,21 +89,48 @@ export async function diagnose(
   return handleResponse<DiagnoseResponse>(res);
 }
 
+// ─── Analyze (Plan only, no execution) ───────────────────────────────────────
+/** POST /api/analyze — ask AI for a cleaning plan WITHOUT executing it */
+export async function analyzePlan(
+  fingerprint: DatasetFingerprint,
+  model?: string,
+  apiKey?: string
+): Promise<{ plan: any; explanation: string }> {
+  const res = await fetch(`${BASE_URL}/api/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fingerprint, model, api_key: apiKey }),
+  });
+  return handleResponse<{ plan: any; explanation: string }>(res);
+}
+
 // ─── Clean ────────────────────────────────────────────────────────────────────
-/** POST /api/clean — executes AI cleaning plan on the dataset */
+/** POST /api/clean — executes a cleaning plan on the dataset.
+ *  If `plan` is provided the backend skips the AI call and uses it directly.
+ *  If `enabledActions` is provided only those action types are executed. */
 export async function cleanDataset(
   filePath: string,
   fingerprint: DatasetFingerprint,
   model?: string,
-  apiKey?: string
+  apiKey?: string,
+  plan?: any,
+  enabledActions?: string[]
 ): Promise<CleanResponse> {
   const res = await fetch(`${BASE_URL}/api/clean`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_path: filePath, fingerprint, model, api_key: apiKey }),
+    body: JSON.stringify({
+      file_path: filePath,
+      fingerprint,
+      model,
+      api_key: apiKey,
+      ...(plan ? { plan } : {}),
+      ...(enabledActions ? { enabled_actions: enabledActions } : {}),
+    }),
   });
   return handleResponse<CleanResponse>(res);
 }
+
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 /** POST /api/chat — conversational Q&A with dataset context */
@@ -101,21 +140,30 @@ export async function chat(
   dataInfo: Record<string, unknown>,
   safeSummary: string,
   model?: string,
-  apiKey?: string
+  apiKey?: string,
+  filePath?: string
 ): Promise<{ reply: string }> {
-  const res = await fetch(`${BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prompt,
-      dataset_state: datasetState,
-      data_info: dataInfo,
-      safe_summary: safeSummary,
-      model,
-      api_key: apiKey,
-    }),
-  });
-  return handleResponse<{ reply: string }>(res);
+  try {
+    const res = await fetch(`${BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        dataset_state: datasetState,
+        data_info: dataInfo,
+        safe_summary: safeSummary,
+        model,
+        api_key: apiKey,
+        file_path: filePath,
+      }),
+    });
+    return handleResponse<{ reply: string }>(res);
+  } catch (err: any) {
+    if (err.message === "Failed to fetch") {
+      throw new Error(`Connection failed. Ensure backend is running at ${BASE_URL}.`);
+    }
+    throw err;
+  }
 }
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────
@@ -143,5 +191,39 @@ export function getCleanedCsvUrl(filename: string): string {
 /** Returns the direct URL for a report download (Python script or text report) */
 export function getReportDownloadUrl(filename: string): string {
   return `${BASE_URL}/api/download/report/${filename}`;
+}
+
+// ─── Knowledge Base ──────────────────────────────────────────────────────────
+export async function learnPattern(
+  columns: string[],
+  fixCode: string,
+  description: string,
+  sourceFile: string
+): Promise<{ message: string; pattern_id: string }> {
+  const res = await fetch(`${BASE_URL}/api/learn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      columns,
+      fix_code: fixCode,
+      description,
+      source_file: sourceFile
+    }),
+  });
+  return handleResponse<{ message: string; pattern_id: string }>(res);
+}
+
+export async function getPatterns(): Promise<{ verified_patterns: any[]; staged_patterns: any[] }> {
+  const res = await fetch(`${BASE_URL}/api/patterns`);
+  return handleResponse<{ verified_patterns: any[]; staged_patterns: any[] }>(res);
+}
+
+export async function verifyPattern(patternId: string): Promise<{ message: string }> {
+  const res = await fetch(`${BASE_URL}/api/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pattern_id: patternId }),
+  });
+  return handleResponse<{ message: string }>(res);
 }
 

@@ -37,13 +37,13 @@ import LandingScreen from "@/components/LandingScreen";
 import ChatPanel from "@/components/ChatPanel";
 import DataPanel from "@/components/DataPanel";
 import WorkflowLayout from "@/components/WorkflowLayout";
+import KnowledgeBasePane from "@/components/KnowledgeBasePane";
 import { useRole } from "@/lib/hooks";
 import * as api from "@/lib/api";
-import { DatasetFingerprint } from "@/lib/schemas";
+import { DatasetFingerprint, TabId } from "@/lib/schemas";
 
 // ── Type definitions ──
 type Message = { role: "user" | "assistant"; content: string };
-type TabId = "diagnostics" | "plan" | "dashboard" | "metrics";
 type Dataset = {
   fileName: string;
   filePath: string;
@@ -99,11 +99,16 @@ export default function Home() {
 
   // ── Workflow State ──
   const [activeTab, setActiveTab] = useState<TabId>("diagnostics");
+  const [activeLeftView, setActiveLeftView] = useState<"chat" | "kb">("chat");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [diagnosticReport, setDiagnosticReport] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [cleanedDataset, setCleanedDataset] = useState<any | null>(null);
   const [isCleaning, setIsCleaning] = useState(false);
   const [selectedModel, setSelectedModel] = useState("llama-3.3-70b-versatile");
+  // Stage 1 state: plan generated but not yet executed
+  const [generatedPlan, setGeneratedPlan] = useState<{ plan: any; explanation: string } | null>(null);
+  const [isPlanLoading, setIsPlanLoading] = useState(false);
 
   // ── Close sidebar on mobile when dataset loads ──
   useEffect(() => {
@@ -162,6 +167,7 @@ export default function Home() {
   const handleNewSession = () => {
     setActiveDataset(null);
     setCleanedDataset(null);
+    setGeneratedPlan(null);
     setDiagnosticReport(null);
     setMessages([]);
     setActiveTab("diagnostics");
@@ -329,7 +335,9 @@ export default function Home() {
         activeDataset ? `Loaded file: ${activeDataset.fileName}` : "mock",
         (activeDataset?.fingerprint ?? {}) as any,
         JSON.stringify(activeDataset?.fingerprint?.safe_sample ?? {}),
-        selectedModel
+        selectedModel,
+        undefined, // apiKey
+        activeDataset?.filePath
       );
       setMessages((prev) => [
         ...prev,
@@ -366,39 +374,69 @@ export default function Home() {
   };
 
   // ────────────────────────────────────────────
-  // RUN REFINERY (Clean the data)
-  // POSTs to /api/clean, stores cleaned dataset, switches to cleaned tab
+  // STAGE 1: GENERATE PLAN (no execution)
+  // POSTs to /api/analyze to get the AI cleaning plan, then switches to Plan tab.
+  // The user can then review and toggle steps before deploying.
   // ────────────────────────────────────────────
-  const runRefinery = async () => {
+  const generatePlan = async () => {
     if (!activeDataset) return;
-    setIsCleaning(true);
+    setIsPlanLoading(true);
+    setGeneratedPlan(null); // clear any previous plan
     try {
-      const data = await api.cleanDataset(
-        activeDataset.filePath,
+      const data = await api.analyzePlan(
         activeDataset.fingerprint as any,
         selectedModel
       );
-      
+      setGeneratedPlan({ plan: data.plan, explanation: data.explanation });
+      setActiveTab("plan"); // auto-switch to Plan tab
+    } catch (err: any) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `❌ **Plan generation failed:** ${err.message}` },
+      ]);
+    } finally {
+      setIsPlanLoading(false);
+    }
+  };
+
+  // ────────────────────────────────────────────
+  // STAGE 2: RUN REFINERY (execute the reviewed plan)
+  // Takes the enabledActions list (from CleaningPlanPane toggles),
+  // passes the pre-generated plan + filtered actions to /api/clean.
+  // ────────────────────────────────────────────
+  const runRefinery = async (enabledActions?: string[]) => {
+    if (!activeDataset) return;
+    setIsCleaning(true);
+    try {
+      const planToUse = generatedPlan?.plan ?? undefined;
+      const data = await api.cleanDataset(
+        activeDataset.filePath,
+        activeDataset.fingerprint as any,
+        selectedModel,
+        undefined,       // apiKey (uses backend .env)
+        planToUse,       // pre-reviewed plan — skips AI call
+        enabledActions   // only execute these action types
+      );
+
       const finalCleanedDataset = {
         ...data.cleaned_data,
-        plan: data.plan,                   // The JSON plan
-        python_code: data.python_code,     // The actual Python script
+        plan: data.plan,
+        python_code: data.python_code,
         explanation: data.explanation,
+        used_kb: data.used_kb,
       };
       setCleanedDataset(finalCleanedDataset);
+      setGeneratedPlan(null); // plan has been executed — clear it
       setActiveTab("dashboard");
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `✨ Dataset cleaned! ${data.message}\n\n${data.explanation ?? ""}` },
+        { role: "assistant", content: `✨ Pipeline deployed successfully!\n\n${data.explanation ?? ""}` },
       ]);
     } catch (err: any) {
       const errMsg = err?.message ?? "Unknown error";
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content: `❌ **Cleaning failed:** ${errMsg}`,
-        },
+        { role: "assistant", content: `❌ **Refinement failed:** ${errMsg}` },
       ]);
     } finally {
       setTimeout(() => setIsCleaning(false), 500);
@@ -426,6 +464,8 @@ export default function Home() {
         onNewSession={handleNewSession}
         onLoadSession={handleLoadSession}
         onDeleteSession={handleDeleteSession}
+        activeLeftView={activeLeftView}
+        onViewChange={setActiveLeftView}
       />
 
       {/* ── Mobile overlay backdrop (darkens content behind open sidebar) ── */}
@@ -460,36 +500,46 @@ export default function Home() {
            * WorkflowLayout provides the two-column split.
            * We pass ChatPanel to `leftPanel` and DataPanel to `rightPanel`.
            */
-          <WorkflowLayout
-            left={
-              <ChatPanel
-                messages={messages}
-                chatInput={chatInput}
-                onChatInputChange={setChatInput}
-                onSendMessage={handleSendMessage}
-                isTyping={isTyping}
-                cleanedDataset={cleanedDataset}
-                onFileSelect={handleFileUpload}
-                selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
-                chatPlaceholder={copy.chatPlaceholder}
-              />
-            }
+           <WorkflowLayout
+             left={
+               activeLeftView === "chat" ? (
+                 <ChatPanel
+                   messages={messages}
+                   chatInput={chatInput}
+                   onChatInputChange={setChatInput}
+                   onSendMessage={handleSendMessage}
+                   isTyping={isTyping}
+                   cleanedDataset={cleanedDataset}
+                   onFileSelect={handleFileUpload}
+                   selectedModel={selectedModel}
+                   onModelChange={setSelectedModel}
+                   chatPlaceholder={copy.chatPlaceholder}
+                   onRefine={runRefinery}
+                 />
+               ) : (
+                 <KnowledgeBasePane />
+               )
+             }
             right={
               <DataPanel
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
                 activeDataset={activeDataset}
                 cleanedDataset={cleanedDataset}
+                generatedPlan={generatedPlan}
                 diagnosticReport={diagnosticReport}
                 isAnalyzing={isAnalyzing}
+                isPlanLoading={isPlanLoading}
                 isCleaning={isCleaning}
                 onRunDiagnostics={runDiagnostics}
+                onGeneratePlan={generatePlan}
                 onRunRefinery={runRefinery}
                 showAdvanced={copy.showAdvancedOptions}
+                usedKb={cleanedDataset?.used_kb}
                 onClose={() => {
                   setActiveDataset(null);
                   setCleanedDataset(null);
+                  setGeneratedPlan(null);
                   setDiagnosticReport(null);
                   setMessages([]);
                   setActiveTab("diagnostics");

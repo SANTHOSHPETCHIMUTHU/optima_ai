@@ -1,3 +1,58 @@
+export type TabId = "diagnostics" | "plan" | "dashboard" | "metrics" | "code" | "kb";
+
+// ─── Shared ────────────────────────────────────────────────────────────────────
+export interface DatasetFingerprint {
+  shape: [number, number];
+  columns: string[];
+  dtypes: Record<string, string>;
+  total_nulls: number;
+  duplicate_rows: number;
+  safe_sample: any[];
+  safe_summary?: string;
+}
+
+// ─── Upload ───────────────────────────────────────────────────────────────────
+export interface UploadResponse {
+  file_id: string;
+  file_path: string;
+  filename: string;
+  rows: number;
+  cols: number;
+  size_bytes: number;
+  columns: string[];
+  dtypes: Record<string, string>;
+}
+
+// ─── Analyze Init ─────────────────────────────────────────────────────────────
+export interface AnalyzeInitResponse {
+  file_id: string;
+  file_path: string;
+  preprocessed_path?: string;
+  fingerprint: DatasetFingerprint;
+  safe_summary: string;
+}
+
+// ─── Diagnose ─────────────────────────────────────────────────────────────────
+export interface DiagnoseResponse {
+  report: string;
+  model_used: string;
+}
+
+// ─── Clean ────────────────────────────────────────────────────────────────────
+export interface CleanResponse {
+  message: string;
+  cleaning_report: string; // filename of script
+  explanation: string;
+  plan: any;
+  python_code: string;
+  used_kb?: boolean;
+  cleaned_data: {
+    file_path: string;
+    shape: [number, number];
+    fingerprint: DatasetFingerprint;
+  };
+}
+
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 export type MetricsTask = "classification" | "regression" | "clustering";
 

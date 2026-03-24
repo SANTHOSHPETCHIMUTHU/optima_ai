@@ -84,10 +84,52 @@ Dataset Fingerprint:
 {json.dumps(fingerprint)}
 """
 
+def _robust_parse_json(raw: str) -> dict:
+    """
+    Attempt to parse a JSON string produced by an LLM, applying progressive
+    auto-fix strategies to recover from common AI mistakes.
+    """
+    # Strategy 1: parse as-is
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: remove trailing commas before ] or }
+    # e.g.  {"a": 1,}  or  [1, 2,]
+    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 3: replace Python-style single-quoted strings with double-quoted.
+    # Naively swap outer single-quotes that wrap values, being careful not to
+    # touch apostrophes inside words.
+    cleaned2 = re.sub(r"(?<![\\])'", '"', cleaned)
+    # Also replace Python literals True/False/None
+    cleaned2 = cleaned2.replace("True", "true").replace("False", "false").replace("None", "null")
+    try:
+        return json.loads(cleaned2)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 4: strip any control characters / literal newlines inside string values
+    cleaned3 = re.sub(r'(?<=")([^"\\]*(?:\\.[^"\\]*)*)"', 
+                      lambda m: m.group(0).replace('\n', ' ').replace('\r', ' '), 
+                      cleaned2)
+    try:
+        return json.loads(cleaned3)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Could not repair malformed JSON from AI: {e}") from e
+
+
 def request_plan(client: OpenAI, prompt: str) -> tuple[dict, str]:
     """
     Sends the generated dataset payload to the AI, safely extracting BOTH
     the JSON structural plan and the conversational explanation block.
+    Falls through ALL models on any error (rate-limit OR parse error) so a
+    malformed response from model #1 automatically retries with model #2.
     """
     ALL_MODELS = [
         "llama-3.3-70b-versatile",
@@ -95,9 +137,9 @@ def request_plan(client: OpenAI, prompt: str) -> tuple[dict, str]:
         "mixtral-8x7b-32768",
         "gemma2-9b-it",
     ]
-    
+
     last_error = "Unknown error"
-    
+
     for model in ALL_MODELS:
         try:
             resp = client.chat.completions.create(
@@ -105,40 +147,45 @@ def request_plan(client: OpenAI, prompt: str) -> tuple[dict, str]:
                 messages=[{"role": "user", "content": prompt}],
             )
             full_content = resp.choices[0].message.content.strip()
-            
-            # Use regex to find the FIRST ```json ... ``` block
+
+            # ── Extract the first ```json ... ``` block ──
             json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", full_content, re.DOTALL)
             if json_match:
                 plan_str = json_match.group(1).strip()
+            elif full_content.startswith("{") and full_content.endswith("}"):
+                # The entire response might be raw JSON
+                plan_str = full_content
             else:
-                # Fallback: maybe the entire response is JSON?
-                if full_content.startswith("{") and full_content.endswith("}"):
-                    plan_str = full_content
-                else:
-                    raise ValueError(f"No JSON block found in the AI response from {model}")
-                    
-            plan = json.loads(plan_str)
-            
-            # Filter actions to ensure they are valid objects and have a 'type'
+                # No JSON block at all — try next model
+                last_error = f"No JSON block found in response from {model}"
+                print(f"DEBUG [request_plan]: {last_error}")
+                continue
+
+            # ── Robust parse (auto-fixes common AI JSON issues) ──
+            plan = _robust_parse_json(plan_str)
+
+            # Sanitise actions list
             if isinstance(plan, dict) and "actions" in plan and isinstance(plan["actions"], list):
                 plan["actions"] = [
-                    a for a in plan["actions"] 
+                    a for a in plan["actions"]
                     if isinstance(a, dict) and isinstance(a.get("type"), str) and a["type"].strip()
                 ]
-            
-            # The explanation is everything OUTSIDE the markdown block
+
+            # Explanation = everything outside the markdown block
             explanation = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", full_content, flags=re.DOTALL).strip()
             if not explanation:
                 explanation = f"Cleaned the dataset based on the generated plan using {model}."
-                
+
             return plan, explanation
-            
+
         except Exception as e:
             err_str = str(e)
             last_error = err_str
-            if "429" in err_str or "rate" in err_str.lower() or "upstream" in err_str.lower():
-                continue # Try next model
-            raise # Re-raise if it's a parse error or syntax error
-            
-    # If all models failed to rate limit:
-    raise RuntimeError(f"All free AI models are rate-limited. Last error: {last_error}")
+            print(f"DEBUG [request_plan] {model} failed: {err_str[:200]}")
+            # Always try the next model — whether it's a rate-limit OR a parse error
+            continue
+
+    # All models exhausted
+    raise RuntimeError(
+        f"All AI models failed to produce a valid cleaning plan. Last error: {last_error}"
+    )

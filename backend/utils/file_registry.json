@@ -1,0 +1,44 @@
+{
+  "6a421cb9-ec42-4439-ab9b-f6bc5b8d00a2": {
+    "file_path": "uploads/034691748da144d1808f4c3385168328_fifa21 raw data v2.csv",
+    "filename": "fifa21 raw data v2.csv",
+    "registered_at": "2026-03-23T15:28:19.263312",
+    "size_bytes": 8433654
+  },
+  "6f6355a5-1bcf-4064-b1c9-32d1e61073d5": {
+    "file_path": "uploads/3e1ca8a707434d99837bcdfbb8c693b5_sample_dirty_data.csv",
+    "filename": "sample_dirty_data.csv",
+    "registered_at": "2026-03-23T15:40:27.089823",
+    "size_bytes": 373
+  },
+  "ff47882b-36ec-429e-97fd-c584a07e987a": {
+    "file_path": "uploads/4e28a7e57a6042119bb22ba64f90b8a4_fifa21 raw data v2.csv",
+    "filename": "fifa21 raw data v2.csv",
+    "registered_at": "2026-03-23T15:43:36.037367",
+    "size_bytes": 8433654
+  },
+  "71f08c59-b2e3-4c4f-b842-937c178ff68d": {
+    "file_path": "uploads/a0a50c7c406643ecbd490e92d3eb8f27_train.csv",
+    "filename": "train.csv",
+    "registered_at": "2026-03-23T15:43:40.191684",
+    "size_bytes": 61194
+  },
+  "949d9ac3-65df-4b8c-91e6-671e86af37fa": {
+    "file_path": "uploads/957e29ebb2e546da8ce763a1a1b15631_reviews.csv",
+    "filename": "reviews.csv",
+    "registered_at": "2026-03-23T15:53:44.342316",
+    "size_bytes": 658649
+  },
+  "dd4f9d3a-727c-4ac5-9272-b4ddbea35260": {
+    "file_path": "uploads/918bc5a351444554991756498ffe0660_sample_dirty_data.csv",
+    "filename": "sample_dirty_data.csv",
+    "registered_at": "2026-03-23T15:55:41.270584",
+    "size_bytes": 373
+  },
+  "3b1ceb75-ea3a-4ff6-b440-42d1efe45449": {
+    "file_path": "uploads/5dcf6456a78847aba19cbf70b79b7c7e_laptopData.csv",
+    "filename": "laptopData.csv",
+    "registered_at": "2026-03-23T16:07:42.130913",
+    "size_bytes": 174903
+  }
+}

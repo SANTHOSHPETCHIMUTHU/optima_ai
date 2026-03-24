@@ -18,22 +18,29 @@
 import CleaningPlanPane from "./CleaningPlanPane";
 import PreviewComparePane from "./PreviewComparePane";
 import MetricsPane from "./MetricsPane";
+import KnowledgeBasePane from "./KnowledgeBasePane";
 import DownloadBar from "./DownloadBar";
+import { TabId } from "@/lib/schemas";
+import * as api from "@/lib/api";
 
-type TabId = "diagnostics" | "plan" | "dashboard" | "metrics";
+type TabIdLocal = TabId; // avoid collision if needed
 
 interface DataPanelProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   activeDataset: any;
   cleanedDataset: any;
+  generatedPlan: { plan: any; explanation: string } | null; // plan before execution
   diagnosticReport: string | null;
   isAnalyzing: boolean;
+  isPlanLoading: boolean;     // spinner for Approve & Clean
   isCleaning: boolean;
   onRunDiagnostics: () => void;
-  onRunRefinery: () => void;
+  onGeneratePlan: () => void; // Step 1: generate plan only
+  onRunRefinery: (enabledActions: string[]) => void; // Step 2: execute plan
   onClose: () => void;
   showAdvanced?: boolean;
+  usedKb?: boolean;
 }
 
 // ── Tab strip button ────────────────────────────────────────────────────────────
@@ -73,9 +80,11 @@ function TabButton({ id, label, activeTab, color, onClick, disabled, badge }: Ta
 export default function DataPanel({
   activeTab, onTabChange,
   activeDataset, cleanedDataset,
-  diagnosticReport, isAnalyzing, isCleaning,
-  onRunDiagnostics, onRunRefinery, onClose,
+  generatedPlan,
+  diagnosticReport, isAnalyzing, isPlanLoading, isCleaning,
+  onRunDiagnostics, onGeneratePlan, onRunRefinery, onClose,
   showAdvanced = false,
+  usedKb = false,
 }: DataPanelProps) {
 
   const isPostClean = !!cleanedDataset;
@@ -93,6 +102,7 @@ export default function DataPanel({
         <TabButton id="plan"        label="Plan"        activeTab={activeTab} color="orange"  onClick={onTabChange} badge={isPostClean ? "new" : undefined} />
         <TabButton id="dashboard"   label="Dashboard 📊" activeTab={activeTab} color="emerald" onClick={onTabChange} />
         <TabButton id="metrics"     label="Metrics"     activeTab={activeTab} color="violet"  onClick={onTabChange} />
+        <TabButton id="code"        label="Code 💻"     activeTab={activeTab} color="purple"  onClick={onTabChange} />
 
         {/* Spacer + Close button */}
         <div className="flex-1" />
@@ -129,44 +139,20 @@ export default function DataPanel({
                   🔬 Run Diagnosis
                 </button>
               )}
+              {diagnosticReport && (
+                <button
+                  onClick={onGeneratePlan}
+                  disabled={isPlanLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-all font-semibold shadow-lg shadow-blue-600/20"
+                >
+                  {isPlanLoading ? (
+                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>🚀 {"Approve & Clean"}</>
+                  )}
+                </button>
+              )}
             </div>
-
-            {/* Data preview table — always visible */}
-            <div className="bg-[#070d18] border border-white/5 rounded-xl overflow-hidden flex-shrink-0" style={{ maxHeight: "160px" }}>
-              <div className="overflow-auto h-full custom-scrollbar">
-                {activeDataset?.fingerprint?.safe_sample?.length > 0 ? (
-                  <table className="w-full text-left text-[10px] border-collapse">
-                    <thead className="bg-[#111827] sticky top-0">
-                      <tr>
-                        <th className="px-2 py-2 text-slate-700 font-mono border-b border-r border-white/5 w-6">#</th>
-                        {columns.slice(0, 8).map((col) => (
-                          <th key={col} className="px-2 py-2 text-slate-500 font-semibold border-b border-r border-white/5 whitespace-nowrap">{col}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.03]">
-                      {activeDataset.fingerprint.safe_sample.slice(0, 5).map((row: any, i: number) => (
-                        <tr key={i} className="hover:bg-white/[0.02]">
-                          <td className="px-2 py-1.5 text-slate-700 font-mono border-r border-white/5">{i + 1}</td>
-                          {columns.slice(0, 8).map((col) => {
-                            const val = row[col];
-                            const isMissing = val === null || val === undefined || val === "";
-                            return (
-                              <td key={col} className="px-2 py-1.5 border-r border-white/[0.03] whitespace-nowrap max-w-[120px] truncate">
-                                {isMissing ? <span className="text-red-500/50 italic text-[9px]">null</span> : <span className="text-slate-300">{String(val)}</span>}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="flex items-center justify-center h-20 text-slate-600 text-[11px]">No sample data available</div>
-                )}
-              </div>
-            </div>
-
             {/* Report or placeholder */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
               {isAnalyzing ? (
@@ -184,21 +170,7 @@ export default function DataPanel({
                     {diagnosticReport}
                   </pre>
 
-                  {/* CTA: start cleaning */}
-                  <button
-                    onClick={onRunRefinery}
-                    disabled={isCleaning}
-                    className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-[12px] font-semibold rounded-xl transition-all shadow-lg shadow-orange-600/20"
-                  >
-                    {isCleaning ? (
-                      <>
-                        <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                        Cleaning in progress...
-                      </>
-                    ) : (
-                      <>🚀 Satisfied? Approve &amp; Refine Data</>
-                    )}
-                  </button>
+                  {/* CTA: start cleaning moved to top right */}
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
@@ -213,8 +185,14 @@ export default function DataPanel({
         {/* ════ TAB: PLAN ════ */}
         {activeTab === "plan" && (
           <CleaningPlanPane
-            cleaningReport={cleanedDataset?.plan ? JSON.stringify(cleanedDataset.plan) : null}
-            explanation={cleanedDataset?.explanation ?? null}
+            cleaningReport={
+              generatedPlan?.plan
+                ? JSON.stringify(generatedPlan.plan)
+                : cleanedDataset?.plan
+                ? JSON.stringify(cleanedDataset.plan)
+                : null
+            }
+            explanation={generatedPlan?.explanation ?? cleanedDataset?.explanation ?? null}
             onApprove={onRunRefinery}
             isCleaning={isCleaning}
             showJsonPlan={showAdvanced}
@@ -237,6 +215,63 @@ export default function DataPanel({
             cleanedFilePath={cleanedDataset?.file_path ?? null}
             showAdvanced={showAdvanced}
           />
+        )}
+
+        {/* ════ TAB: KB (BRAIN) ════ */}
+        {activeTab === "kb" && (
+          <KnowledgeBasePane />
+        )}
+
+        {/* ════ TAB: CODE ════ */}
+        {activeTab === "code" && (
+          <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
+            <div className="flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-purple-500" />
+                <span className="text-[12px] font-semibold text-slate-300">Python Cleaning Script</span>
+                {usedKb && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    KB MATCH
+                  </span>
+                )}
+              </div>
+              
+              {cleanedDataset?.python_code && !usedKb && (
+                <button
+                  onClick={async () => {
+                    try {
+                      await api.learnPattern(
+                        activeDataset?.fingerprint?.columns ?? [],
+                        cleanedDataset.python_code,
+                        "Learned custom cleaning pattern",
+                        activeDataset?.fileName ?? "unknown"
+                      );
+                      alert("Pattern staged for review! Once verified, it will be reused for similar files.");
+                    } catch (err: any) {
+                      alert("Error teaching AI: " + err.message);
+                    }
+                  }}
+                  className="px-2 py-1 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 text-[10px] font-semibold rounded border border-purple-500/30 transition-all flex items-center gap-1"
+                >
+                  🧠 Teach AI this logic
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-auto bg-[#070d18] border border-white/5 rounded-xl p-4 custom-scrollbar">
+              {cleanedDataset?.python_code ? (
+                <pre className="text-[11px] text-emerald-400/80 leading-relaxed whitespace-pre font-mono">
+                  {cleanedDataset.python_code}
+                </pre>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                  <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center text-xl">💻</div>
+                  <p className="text-[12px] text-slate-500">No cleaning code found. Run the refinery first.</p>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
