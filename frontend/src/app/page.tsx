@@ -31,6 +31,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import Sidebar, { SessionRecord } from "@/components/Sidebar";
 import Header from "@/components/Header";
 import LandingScreen from "@/components/LandingScreen";
@@ -41,6 +42,8 @@ import KnowledgeBasePane from "@/components/KnowledgeBasePane";
 import { useRole } from "@/lib/hooks";
 import * as api from "@/lib/api";
 import { DatasetFingerprint, TabId } from "@/lib/schemas";
+import { supabase } from "@/lib/supabase";
+import { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
 // ── Type definitions ──
 type Message = { role: "user" | "assistant"; content: string };
@@ -72,17 +75,39 @@ function saveSessions(sessions: SessionRecord[]): void {
 }
 
 export default function Home() {
+  const router = useRouter();
   // ── Sidebar State ──
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // ── Session History State ──
   // Loaded from localStorage on mount, saved whenever a new dataset is uploaded.
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
+
+  // Wrapper to also persist to sessionStorage
+  const setActiveSessionId = (id: string | null) => {
+    setActiveSessionIdState(id);
+    if (id) sessionStorage.setItem("optima_active_session_id", id);
+    else sessionStorage.removeItem("optima_active_session_id");
+  };
+
+  const [isInitializing, setIsInitializing] = useState(true);
 
   // Load sessions from localStorage on first render (client-side only)
   useEffect(() => {
-    setSessions(loadSessions());
+    const loaded = loadSessions();
+    setSessions(loaded);
+    
+    // Check if we should restore the last active session
+    const savedActiveId = sessionStorage.getItem("optima_active_session_id");
+    if (savedActiveId) {
+      const session = loaded.find(s => s.id === savedActiveId);
+      if (session) {
+        // Trigger restoration in the next frame to avoid React strict mode issues
+        setTimeout(() => handleLoadSession(session), 0);
+      }
+    }
+    setIsInitializing(false);
   }, []);
 
   // ── Upload & Dataset State ──
@@ -106,9 +131,54 @@ export default function Home() {
   const [cleanedDataset, setCleanedDataset] = useState<any | null>(null);
   const [isCleaning, setIsCleaning] = useState(false);
   const [selectedModel, setSelectedModel] = useState("llama-3.3-70b-versatile");
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   // Stage 1 state: plan generated but not yet executed
   const [generatedPlan, setGeneratedPlan] = useState<{ plan: any; explanation: string } | null>(null);
   const [isPlanLoading, setIsPlanLoading] = useState(false);
+
+  // ── Quality Metrics State ──
+  const [qualityMetricsPre, setQualityMetricsPre] = useState<any | null>(null);
+  const [qualityMetricsPost, setQualityMetricsPost] = useState<any | null>(null);
+  const [cleaningSummary, setCleaningSummary] = useState<string | null>(null);
+
+  // ── Auth & User State ──
+  const [user, setUser] = useState<any>(null);
+
+  // ── Auth Guard ──
+  useEffect(() => {
+    // Initial check
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.push("/login");
+      } else {
+        localStorage.setItem("optima_token", session.access_token);
+        setUser(session.user);
+      }
+    };
+    checkUser();
+
+    // Listen for changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
+      if (!session) {
+        localStorage.removeItem("optima_token");
+        setUser(null);
+        router.push("/login");
+      } else {
+        localStorage.setItem("optima_token", session.access_token);
+        setUser(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    localStorage.removeItem("optima_token");
+    sessionStorage.removeItem("optima_active_session_id");
+    router.push("/login");
+  };
 
   // ── Close sidebar on mobile when dataset loads ──
   useEffect(() => {
@@ -133,6 +203,9 @@ export default function Home() {
         messages,
         diagnosticReport,
         cleanedDataset,
+        qualityMetricsPre,
+        qualityMetricsPost,
+        cleaningSummary,
       };
       
       saveSessions(updatedSessions);
@@ -202,6 +275,9 @@ export default function Home() {
     
     setCleanedDataset(session.cleanedDataset || null);
     setDiagnosticReport(session.diagnosticReport || null);
+    setQualityMetricsPre((session as any).qualityMetricsPre || null);
+    setQualityMetricsPost((session as any).qualityMetricsPost || null);
+    setCleaningSummary((session as any).cleaningSummary || null);
     
     // Auto-switch to the most relevant tab
     if (session.cleanedDataset) {
@@ -244,30 +320,44 @@ export default function Home() {
     if (initialPrompt) setChatInput("");
 
     try {
-      // Step 1: Upload file
+      // Step 1: Upload file (Must be first to get the path)
       const uploadData = await api.uploadFile(file);
 
-      // Step 2: Analyze/fingerprint the file
-      const analyzeData = await api.analyzeInit(uploadData.file_path);
+      // Step 2: Analyze & Metrics in Parallel
+      // We start both but await analyzeInit first as it's required for the workspace UI
+      const analyzePromise = api.analyzeInit(uploadData.file_path);
+      const metricsPromise = api.getQualityMetrics(uploadData.file_path);
 
-      // Step 3: Store dataset in state
+      const analyzeData = await analyzePromise;
+      
+      // Step 3: Store dataset in state (Workspace shows up now)
       const newDataset: Dataset = {
         fileName: file.name,
         filePath: uploadData.file_path,
         shape: analyzeData.fingerprint.shape,
         fingerprint: analyzeData.fingerprint,
       };
+      
+      // Fallback for crypto.randomUUID() in non-secure contexts or older browsers
+      const newSessionId = (typeof crypto !== "undefined" && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
       setActiveDataset(newDataset);
-      setUploadStatus({ msg: "Dataset loaded into memory.", isError: false });
+      setActiveSessionId(newSessionId);
+      saveSession(newDataset, newSessionId);
+
+      setUploadStatus({ msg: "Dataset loaded. Finalizing analysis...", isError: false });
       setActiveTab("diagnostics");
+      setUploading(false); // UI Unlocks here!
 
-      // Save to history
-      const sessionId = `${Date.now()}-${file.name}`;
-      setActiveSessionId(sessionId);
-      saveSession(newDataset, sessionId);
-
-      // Finish upload state immediately so the workspace shows
-      setUploading(false);
+      // Step 4: Await and set quality metrics in the background
+      try {
+        const qm = await metricsPromise;
+        setQualityMetricsPre(qm);
+        setUploadStatus({ msg: "Analysis complete.", isError: false });
+      } catch (qmErr) {
+        console.error("Failed to fetch quality metrics", qmErr);
+      }
 
       // Step 4: Initial messages
       const baseMessages: Message[] = [
@@ -427,6 +517,11 @@ export default function Home() {
       };
       setCleanedDataset(finalCleanedDataset);
       setGeneratedPlan(null); // plan has been executed — clear it
+      setCleaningSummary(data.cleaning_summary || null);
+      if (data.quality_metrics) {
+        setQualityMetricsPre(data.quality_metrics.initial);
+        setQualityMetricsPost(data.quality_metrics.cleaned);
+      }
       setActiveTab("dashboard");
       setMessages((prev) => [
         ...prev,
@@ -485,12 +580,14 @@ export default function Home() {
       <main className="flex-1 flex flex-col overflow-hidden min-w-0">
 
         {/* ── Header ── */}
-        <Header
-          fileName={activeDataset?.fileName}
-          selectedModel={selectedModel}
-          onModelChange={setSelectedModel}
+        <Header 
+          fileName={activeDataset?.fileName} 
           onMobileMenuToggle={() => setIsSidebarOpen((v) => !v)}
           isSidebarOpen={isSidebarOpen}
+          theme={theme}
+          onThemeToggle={() => setTheme(theme === "dark" ? "light" : "dark")}
+          onLogout={handleLogout}
+          user={user}
         />
 
         {/* ── Page Body: Landing OR Workspace ── */}
@@ -536,6 +633,11 @@ export default function Home() {
                 onRunRefinery={runRefinery}
                 showAdvanced={copy.showAdvancedOptions}
                 usedKb={cleanedDataset?.used_kb}
+                qualityMetricsPre={qualityMetricsPre}
+                qualityMetricsPost={qualityMetricsPost}
+                cleaningSummary={cleaningSummary}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
                 onClose={() => {
                   setActiveDataset(null);
                   setCleanedDataset(null);

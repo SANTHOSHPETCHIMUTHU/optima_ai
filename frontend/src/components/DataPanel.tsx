@@ -41,6 +41,11 @@ interface DataPanelProps {
   onClose: () => void;
   showAdvanced?: boolean;
   usedKb?: boolean;
+  qualityMetricsPre?: any;
+  qualityMetricsPost?: any;
+  cleaningSummary?: string | null;
+  selectedModel: string;
+  onModelChange: (m: string) => void;
 }
 
 // ── Tab strip button ────────────────────────────────────────────────────────────
@@ -85,6 +90,11 @@ export default function DataPanel({
   onRunDiagnostics, onGeneratePlan, onRunRefinery, onClose,
   showAdvanced = false,
   usedKb = false,
+  qualityMetricsPre,
+  qualityMetricsPost,
+  cleaningSummary,
+  selectedModel,
+  onModelChange,
 }: DataPanelProps) {
 
   const isPostClean = !!cleanedDataset;
@@ -131,26 +141,30 @@ export default function DataPanel({
                 </span>
               </div>
               {!diagnosticReport && !isAnalyzing && (
-                <button
-                  onClick={onRunDiagnostics}
-                  id="run-diagnosis-btn"
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all font-medium"
-                >
-                  🔬 Run Diagnosis
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onRunDiagnostics}
+                    id="run-diagnosis-btn"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all font-medium"
+                  >
+                    🔬 Run Diagnosis
+                  </button>
+                </div>
               )}
               {diagnosticReport && (
-                <button
-                  onClick={onGeneratePlan}
-                  disabled={isPlanLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-all font-semibold shadow-lg shadow-blue-600/20"
-                >
-                  {isPlanLoading ? (
-                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <>🚀 {"Approve & Clean"}</>
-                  )}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onGeneratePlan}
+                    disabled={isPlanLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-all font-semibold shadow-lg shadow-blue-600/20"
+                  >
+                    {isPlanLoading ? (
+                      <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <>🚀 {"Approve & Clean"}</>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
             {/* Report or placeholder */}
@@ -197,6 +211,8 @@ export default function DataPanel({
             isCleaning={isCleaning}
             showJsonPlan={showAdvanced}
             pythonCode={cleanedDataset?.python_code ?? null}
+            selectedModel={selectedModel}
+            onModelChange={onModelChange}
           />
         )}
 
@@ -214,6 +230,8 @@ export default function DataPanel({
           <MetricsPane
             cleanedFilePath={cleanedDataset?.file_path ?? null}
             showAdvanced={showAdvanced}
+            qualityMetricsPre={qualityMetricsPre}
+            qualityMetricsPost={qualityMetricsPost}
           />
         )}
 

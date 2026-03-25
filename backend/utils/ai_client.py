@@ -1,14 +1,30 @@
 import json
 import re
+import os
 from openai import OpenAI
+from dotenv import load_dotenv
 
-def get_openrouter_client(api_key: str) -> OpenAI:
+load_dotenv()
+
+def get_client(model_id: str, api_key: str = None) -> OpenAI:
     """
-    Initializes and returns the Groq OpenAI-compatible client.
+    Returns an OpenAI-compatible client for either Groq or OpenRouter.
     """
+    # OpenRouter models often have a / in them (e.g., google/gemini-flash-1.5)
+    # or specific IDs like stepfun/step-1-8k
+    is_openrouter = "/" in model_id or model_id.startswith("stepfun")
+    
+    if is_openrouter:
+        base_url = "https://openrouter.ai/api/v1"
+        key = api_key or os.getenv("OPENROUTER_API_KEY")
+    else:
+        # Default to Groq for simplicity
+        base_url = "https://api.groq.com/openai/v1"
+        key = api_key or os.getenv("GROQ_API_KEY")
+    
     return OpenAI(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=api_key.strip()
+        base_url=base_url,
+        api_key=(key or "").strip()
     )
 
 def plan_prompt(fingerprint: dict, max_steps: int = 15) -> str:
@@ -87,34 +103,26 @@ Dataset Fingerprint:
 def _robust_parse_json(raw: str) -> dict:
     """
     Attempt to parse a JSON string produced by an LLM, applying progressive
-    auto-fix strategies to recover from common AI mistakes.
+    auto-fix strategies.
     """
-    # Strategy 1: parse as-is
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2: remove trailing commas before ] or }
-    # e.g.  {"a": 1,}  or  [1, 2,]
     cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Strategy 3: replace Python-style single-quoted strings with double-quoted.
-    # Naively swap outer single-quotes that wrap values, being careful not to
-    # touch apostrophes inside words.
     cleaned2 = re.sub(r"(?<![\\])'", '"', cleaned)
-    # Also replace Python literals True/False/None
     cleaned2 = cleaned2.replace("True", "true").replace("False", "false").replace("None", "null")
     try:
         return json.loads(cleaned2)
     except json.JSONDecodeError:
         pass
 
-    # Strategy 4: strip any control characters / literal newlines inside string values
     cleaned3 = re.sub(r'(?<=")([^"\\]*(?:\\.[^"\\]*)*)"', 
                       lambda m: m.group(0).replace('\n', ' ').replace('\r', ' '), 
                       cleaned2)
@@ -123,69 +131,86 @@ def _robust_parse_json(raw: str) -> dict:
     except json.JSONDecodeError as e:
         raise ValueError(f"Could not repair malformed JSON from AI: {e}") from e
 
-
-def request_plan(client: OpenAI, prompt: str) -> tuple[dict, str]:
+def request_ai(prompt: str, model_id: str = "llama-3.3-70b-versatile") -> tuple[str, str | None]:
     """
-    Sends the generated dataset payload to the AI, safely extracting BOTH
-    the JSON structural plan and the conversational explanation block.
-    Falls through ALL models on any error (rate-limit OR parse error) so a
-    malformed response from model #1 automatically retries with model #2.
+    Generic AI request with cross-provider fallback.
+    Returns: (content_str, fallback_note)
     """
-    ALL_MODELS = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
+    fallback_chain = [
+        model_id,
+        "llama-3.3-70b-versatile",          # Groq
+        "google/gemini-2.0-flash-exp:free", # OpenRouter
+        "llama-3.1-8b-instant",             # Groq
+        "deepseek/deepseek-chat",           # OpenRouter
+        "mixtral-8x7b-32768",               # Groq
     ]
+    
+    unique_models = []
+    for m in fallback_chain:
+        if m and m not in unique_models:
+            unique_models.append(m)
 
     last_error = "Unknown error"
+    used_fallback = False
 
-    for model in ALL_MODELS:
+    for current_model in unique_models:
         try:
+            if current_model != model_id:
+                used_fallback = True
+                print(f"DEBUG: Falling back to model: {current_model}")
+
+            client = get_client(current_model)
             resp = client.chat.completions.create(
-                model=model,
+                model=current_model,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=30, # Prevent hanging
             )
-            full_content = resp.choices[0].message.content.strip()
+            content = resp.choices[0].message.content.strip()
+            
+            fallback_note = None
+            if used_fallback:
+                original_prov = "OpenRouter" if ("/" in model_id or model_id.startswith("stepfun")) else "Groq"
+                current_prov = "OpenRouter" if ("/" in current_model or current_model.startswith("stepfun")) else "Groq"
+                fallback_note = f"Note: Selected model ({model_id}) on {original_prov} failed. Using {current_model} on {current_prov}."
 
-            # ── Extract the first ```json ... ``` block ──
-            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", full_content, re.DOTALL)
-            if json_match:
-                plan_str = json_match.group(1).strip()
-            elif full_content.startswith("{") and full_content.endswith("}"):
-                # The entire response might be raw JSON
-                plan_str = full_content
-            else:
-                # No JSON block at all — try next model
-                last_error = f"No JSON block found in response from {model}"
-                print(f"DEBUG [request_plan]: {last_error}")
-                continue
-
-            # ── Robust parse (auto-fixes common AI JSON issues) ──
-            plan = _robust_parse_json(plan_str)
-
-            # Sanitise actions list
-            if isinstance(plan, dict) and "actions" in plan and isinstance(plan["actions"], list):
-                plan["actions"] = [
-                    a for a in plan["actions"]
-                    if isinstance(a, dict) and isinstance(a.get("type"), str) and a["type"].strip()
-                ]
-
-            # Explanation = everything outside the markdown block
-            explanation = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", full_content, flags=re.DOTALL).strip()
-            if not explanation:
-                explanation = f"Cleaned the dataset based on the generated plan using {model}."
-
-            return plan, explanation
+            return content, fallback_note
 
         except Exception as e:
             err_str = str(e)
             last_error = err_str
-            print(f"DEBUG [request_plan] {model} failed: {err_str[:200]}")
-            # Always try the next model — whether it's a rate-limit OR a parse error
+            print(f"DEBUG [request_ai] {current_model} failed: {err_str[:200]}")
             continue
 
-    # All models exhausted
-    raise RuntimeError(
-        f"All AI models failed to produce a valid cleaning plan. Last error: {last_error}"
-    )
+    raise RuntimeError(f"All AI models failed. Last error: {last_error}")
+
+def request_plan(prompt: str, model_id: str = "llama-3.3-70b-versatile") -> tuple[dict, str, str | None]:
+    """
+    Specialized for JSON plans. Returns: (plan_dict, explanation_str, fallback_note)
+    """
+    # Use the generic request_ai for the actual LLM call
+    full_content, fallback_note = request_ai(prompt, model_id)
+
+    # Parsing logic remains the same
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", full_content, re.DOTALL)
+    if json_match:
+        plan_str = json_match.group(1).strip()
+    elif full_content.startswith("{") and full_content.endswith("}"):
+        plan_str = full_content
+    else:
+        # If no JSON block, we might need to retry with a different model if possible,
+        # but for now we'll just fail cleanly.
+        raise ValueError("No valid JSON cleaning plan found in AI response.")
+
+    plan = _robust_parse_json(plan_str)
+
+    if isinstance(plan, dict) and "actions" in plan and isinstance(plan["actions"], list):
+        plan["actions"] = [
+            a for a in plan["actions"]
+            if isinstance(a, dict) and isinstance(a.get("type"), str) and a["type"].strip()
+        ]
+
+    explanation = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", full_content, flags=re.DOTALL).strip()
+    if not explanation:
+        explanation = "Cleaned the dataset based on the generated plan."
+
+    return plan, explanation, fallback_note

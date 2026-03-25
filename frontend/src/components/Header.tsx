@@ -1,41 +1,27 @@
 "use client";
 
-/**
- * Header.tsx
- *
- * PURPOSE: The top navigation bar that appears at all times.
- *
- * CONCEPTS USED:
- * - Props with optional properties: `fileName?` uses `?` to mark it as optional.
- *   If not provided, it's `undefined` and we show a default message.
- * - Conditional rendering: `{fileName && <span>...</span>}` — only renders the
- *   filename span if `fileName` is truthy (not null/undefined/empty).
- * - `select` element: Native HTML dropdown. We style it with Tailwind to look custom
- *   using `appearance-none` to remove browser default styling.
- */
+import ModelSelector from "./ModelSelector";
 
 interface HeaderProps {
   fileName?: string;                      // Current active dataset filename (if any)
-  selectedModel: string;                  // Currently selected AI model
-  onModelChange: (m: string) => void;     // Callback when user picks a different model
   onMobileMenuToggle: () => void;         // Opens/closes sidebar on mobile
   isSidebarOpen: boolean;
+  theme: "dark" | "light";
+  onThemeToggle: () => void;
+  onLogout: () => void;
+  user?: any;
 }
 
-const MODELS = [
-  { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
-  { value: "llama-3.1-8b-instant", label: "Llama 3.1 8B" },
-  { value: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
-  { value: "gemma2-9b-it", label: "Gemma 2 9B" },
-];
+export default function Header({ fileName, onMobileMenuToggle, theme, onThemeToggle, onLogout, user }: HeaderProps) {
+  const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User";
+  const userAvatar = user?.user_metadata?.avatar_url;
 
-export default function Header({ fileName, selectedModel, onModelChange, onMobileMenuToggle }: HeaderProps) {
   return (
     <header className="h-[64px] flex items-center justify-between px-4 md:px-6 bg-[#0d1117] border-b border-white/5 flex-shrink-0 z-10">
 
       {/* ── Left Side: Mobile menu + breadcrumb ── */}
       <div className="flex items-center gap-3">
-        {/* Mobile-only hamburger — hidden on md and above because the sidebar handles it */}
+        {/* Mobile-only hamburger */}
         <button
           onClick={onMobileMenuToggle}
           className="p-2 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-colors md:hidden"
@@ -50,11 +36,9 @@ export default function Header({ fileName, selectedModel, onModelChange, onMobil
           <span className="font-semibold text-slate-200">Data Refinery</span>
           {fileName && (
             <>
-              {/* Separator chevron */}
               <svg className="w-3.5 h-3.5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
               </svg>
-              {/* Filename badge */}
               <span className="text-slate-400 bg-white/5 px-2 py-0.5 rounded-md border border-white/5 font-mono text-[11px] max-w-[160px] truncate">
                 {fileName}
               </span>
@@ -63,36 +47,52 @@ export default function Header({ fileName, selectedModel, onModelChange, onMobil
         </div>
       </div>
 
-      {/* ── Right Side: Model selector ── */}
+      {/* ── Right Side ── */}
       <div className="flex items-center gap-3">
-        {/*
-         * Model selector: We use `appearance-none` to strip the native OS dropdown
-         * styling. A `bg-[#1a202c]` gives it our dark theme look.
-         * We use `<option>` elements inside `<select>` for the choices.
-         */}
-        <div className="relative flex items-center">
-          <svg className="w-3.5 h-3.5 text-purple-400 absolute left-2.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-          <select
-            value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            className="appearance-none bg-[#161b27] hover:bg-[#1e2636] border border-white/8 hover:border-white/15 text-slate-300 text-[11px] font-medium py-1.5 pl-8 pr-7 rounded-lg outline-none transition-all cursor-pointer"
-          >
-            {MODELS.map((m) => (
-              <option key={m.value} className="bg-[#1a202c] text-white" value={m.value}>
-                {m.label} (Free)
-              </option>
-            ))}
-          </select>
-          {/* Custom arrow icon for the select */}
-          <svg className="w-3 h-3 text-slate-500 absolute right-2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
-          </svg>
+        {/* Theme Toggle */}
+        <button
+          onClick={onThemeToggle}
+          title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
+          className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-colors"
+        >
+          {theme === "dark" ? (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M12 5a7 7 0 100 14 7 7 0 000-14z" />
+            </svg>
+          ) : (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          )}
+        </button>
+
+        {/* User Profile */}
+        <div className="flex items-center gap-2 pl-2 border-l border-white/5">
+          {userAvatar ? (
+            <img src={userAvatar} alt={userName} className="w-6 h-6 rounded-full border border-white/10" />
+          ) : (
+            <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-white/10 flex items-center justify-center">
+              <span className="text-[10px] font-bold text-slate-400 capitalize">{userName.charAt(0)}</span>
+            </div>
+          )}
+          <span className="text-[11px] font-medium text-slate-400 hidden lg:block max-w-[100px] truncate">
+            {userName}
+          </span>
         </div>
 
-        {/* Status indicator dot: green = active, grey = idle */}
-        <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+        {/* Logout Button */}
+        <button
+          onClick={onLogout}
+          title="Sign Out"
+          className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+        </button>
+
+        {/* Status indicator dot */}
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-500 ml-2">
           <span className={`w-1.5 h-1.5 rounded-full ${fileName ? "bg-emerald-500 animate-pulse" : "bg-slate-600"}`} />
           {fileName ? "Active" : "Ready"}
         </div>

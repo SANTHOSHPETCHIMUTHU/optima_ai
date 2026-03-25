@@ -33,6 +33,9 @@ export type SessionRecord = {
   messages?: { role: "user" | "assistant"; content: string }[];
   diagnosticReport?: string | null;
   cleanedDataset?: any;
+  qualityMetricsPre?: any;
+  qualityMetricsPost?: any;
+  cleaningSummary?: string | null;
 };
 
 interface SidebarProps {

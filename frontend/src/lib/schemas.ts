@@ -51,6 +51,11 @@ export interface CleanResponse {
     shape: [number, number];
     fingerprint: DatasetFingerprint;
   };
+  quality_metrics?: {
+    initial: any;
+    cleaned: any;
+  };
+  cleaning_summary?: string;
 }
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────

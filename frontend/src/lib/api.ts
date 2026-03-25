@@ -25,6 +25,22 @@ const getBaseUrl = (): string => {
 
 const BASE_URL = getBaseUrl();
 
+/** Gets common headers including the Supabase Auth token */
+const getHeaders = (isMultipart = false) => {
+  const headers: Record<string, string> = {};
+  if (!isMultipart) {
+    headers["Content-Type"] = "application/json";
+  }
+  
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("optima_token");
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
+  return headers;
+};
+
 /** Shared error handler: reads .detail from FastAPI error responses */
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -40,9 +56,10 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ─── Health ──────────────────────────────────────────────────────────────────
 /** GET / — check if backend is online */
 export async function checkHealth(): Promise<{ status: string }> {
-  const res = await fetch(`${BASE_URL}/`);
+  const res = await fetch(`${BASE_URL}/`, { headers: getHeaders() });
   return handleResponse<{ status: string }>(res);
 }
 
@@ -51,9 +68,12 @@ export async function checkHealth(): Promise<{ status: string }> {
 export async function uploadFile(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  // Manual fetch here to avoid handleResponse if we want custom error handling for "Failed to fetch"
   try {
-    const res = await fetch(`${BASE_URL}/api/upload`, { method: "POST", body: form });
+    const res = await fetch(`${BASE_URL}/api/upload`, { 
+      method: "POST", 
+      body: form,
+      headers: getHeaders(true) // multipart
+    });
     return handleResponse<UploadResponse>(res);
   } catch (err: any) {
     if (err.message === "Failed to fetch") {
@@ -68,7 +88,7 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
 export async function analyzeInit(filePath: string): Promise<AnalyzeInitResponse> {
   const res = await fetch(`${BASE_URL}/api/analyze-init`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({ file_path: filePath }),
   });
   return handleResponse<AnalyzeInitResponse>(res);
@@ -83,7 +103,7 @@ export async function diagnose(
 ): Promise<DiagnoseResponse> {
   const res = await fetch(`${BASE_URL}/api/diagnose`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({ fingerprint, model, api_key: apiKey }),
   });
   return handleResponse<DiagnoseResponse>(res);
@@ -98,16 +118,14 @@ export async function analyzePlan(
 ): Promise<{ plan: any; explanation: string }> {
   const res = await fetch(`${BASE_URL}/api/analyze`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({ fingerprint, model, api_key: apiKey }),
   });
   return handleResponse<{ plan: any; explanation: string }>(res);
 }
 
 // ─── Clean ────────────────────────────────────────────────────────────────────
-/** POST /api/clean — executes a cleaning plan on the dataset.
- *  If `plan` is provided the backend skips the AI call and uses it directly.
- *  If `enabledActions` is provided only those action types are executed. */
+/** POST /api/clean — executes a cleaning plan on the dataset. */
 export async function cleanDataset(
   filePath: string,
   fingerprint: DatasetFingerprint,
@@ -118,7 +136,7 @@ export async function cleanDataset(
 ): Promise<CleanResponse> {
   const res = await fetch(`${BASE_URL}/api/clean`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({
       file_path: filePath,
       fingerprint,
@@ -130,7 +148,6 @@ export async function cleanDataset(
   });
   return handleResponse<CleanResponse>(res);
 }
-
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 /** POST /api/chat — conversational Q&A with dataset context */
@@ -146,7 +163,7 @@ export async function chat(
   try {
     const res = await fetch(`${BASE_URL}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getHeaders(),
       body: JSON.stringify({
         prompt,
         dataset_state: datasetState,
@@ -176,10 +193,20 @@ export async function computeMetrics(
 ): Promise<MetricsResponse> {
   const res = await fetch(`${BASE_URL}/api/metrics`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({ file_path: filePath, target_column: targetColumn, task, model }),
   });
   return handleResponse<MetricsResponse>(res);
+}
+
+// ─── Quality Metrics ──────────────────────────────────────────────────────────
+export async function getQualityMetrics(filePath: string): Promise<any> {
+  const res = await fetch(`${BASE_URL}/api/quality-metrics`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ file_path: filePath }),
+  });
+  return handleResponse<any>(res);
 }
 
 // ─── Downloads ────────────────────────────────────────────────────────────────
@@ -202,7 +229,7 @@ export async function learnPattern(
 ): Promise<{ message: string; pattern_id: string }> {
   const res = await fetch(`${BASE_URL}/api/learn`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({
       columns,
       fix_code: fixCode,
@@ -214,14 +241,14 @@ export async function learnPattern(
 }
 
 export async function getPatterns(): Promise<{ verified_patterns: any[]; staged_patterns: any[] }> {
-  const res = await fetch(`${BASE_URL}/api/patterns`);
+  const res = await fetch(`${BASE_URL}/api/patterns`, { headers: getHeaders() });
   return handleResponse<{ verified_patterns: any[]; staged_patterns: any[] }>(res);
 }
 
 export async function verifyPattern(patternId: string): Promise<{ message: string }> {
   const res = await fetch(`${BASE_URL}/api/verify`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getHeaders(),
     body: JSON.stringify({ pattern_id: patternId }),
   });
   return handleResponse<{ message: string }>(res);

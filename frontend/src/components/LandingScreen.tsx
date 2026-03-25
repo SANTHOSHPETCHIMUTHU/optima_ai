@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef } from "react";
+import ModelSelector from "./ModelSelector";
 
 /**
  * LandingScreen.tsx
@@ -76,6 +77,8 @@ export default function LandingScreen({
   onSubmit,
   uploading,
   uploadStatus,
+  selectedModel,
+  onModelChange,
 }: LandingScreenProps) {
   // Ref to the hidden file input — lets us trigger it from our styled button
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -185,31 +188,40 @@ export default function LandingScreen({
                   )}
                 </button>
 
-                <span className="text-slate-700 text-[11px]">CSV · XLSX · up to 50MB</span>
+                <span className="text-slate-700 text-[11px] hidden sm:inline">CSV · XLSX · up to 50MB</span>
               </div>
 
-              {/* Send / Upload button */}
-              <button
-                type="submit"
-                disabled={uploading}
-                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[13px] font-semibold rounded-xl transition-all shadow-lg shadow-blue-600/25"
-              >
-                {chatInput.trim() ? (
-                  <>
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                    </svg>
-                    Send
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                    </svg>
-                    Upload
-                  </>
-                )}
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Embedded Model Selector */}
+                <ModelSelector 
+                  value={selectedModel} 
+                  onChange={onModelChange} 
+                  compact 
+                />
+
+                {/* Send / Upload button */}
+                <button
+                  type="submit"
+                  disabled={uploading}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[13px] font-semibold rounded-xl transition-all shadow-lg shadow-blue-600/25"
+                >
+                  {chatInput.trim() ? (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                      </svg>
+                      Send
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                      </svg>
+                      Upload
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </form>

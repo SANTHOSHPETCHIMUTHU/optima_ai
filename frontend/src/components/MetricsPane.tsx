@@ -76,9 +76,16 @@ function MetricCard({ label, value, good, great, format = "percent" }: MetricCar
 interface MetricsPaneProps {
   cleanedFilePath: string | null;
   showAdvanced?: boolean;
+  qualityMetricsPre?: any;
+  qualityMetricsPost?: any;
 }
 
-export default function MetricsPane({ cleanedFilePath, showAdvanced = false }: MetricsPaneProps) {
+export default function MetricsPane({ 
+  cleanedFilePath, 
+  showAdvanced = false,
+  qualityMetricsPre,
+  qualityMetricsPost
+}: MetricsPaneProps) {
   const [targetColumn, setTargetColumn] = useState("");
   const [taskType, setTaskType] = useState<TaskType>("classification");
   const [selectedModel, setSelectedModel] = useState("");
@@ -231,14 +238,14 @@ export default function MetricsPane({ cleanedFilePath, showAdvanced = false }: M
 
               {metrics.task === "regression" && (
                 <>
-                  <MetricCard label="R² Accuracy" value={metrics.r2} good={0.6} great={0.8} />
+                  <MetricCard label="R² Accuracy" value={metrics.r2 ?? 0} good={0.6} great={0.8} />
                   <div className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl text-left">
                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">MAE Deviation</p>
-                    <p className="text-2xl font-black text-blue-400 font-mono tracking-tighter">{metrics.mae?.toFixed(4)}</p>
+                    <p className="text-2xl font-black text-blue-400 font-mono tracking-tighter">{(metrics.mae ?? 0).toFixed(4)}</p>
                   </div>
                   <div className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl text-left">
                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2">MSE Variance</p>
-                    <p className="text-2xl font-black text-blue-400 font-mono tracking-tighter">{metrics.mse?.toFixed(4)}</p>
+                    <p className="text-2xl font-black text-blue-400 font-mono tracking-tighter">{(metrics.mse ?? 0).toFixed(4)}</p>
                   </div>
                 </>
               )}
@@ -252,23 +259,103 @@ export default function MetricsPane({ cleanedFilePath, showAdvanced = false }: M
                   <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Neural Link Preview</span>
                 </div>
                 <div className="p-4 bg-black/40 rounded-2xl border border-white/5 font-mono text-[10px] text-violet-300/60 overflow-x-auto custom-scrollbar">
-                  <pre>{JSON.stringify(metrics, null, 2)}</pre>
+                  <pre>{JSON.stringify({ ...metrics, qualityMetricsPre, qualityMetricsPost }, null, 2)}</pre>
                 </div>
               </div>
             )}
           </div>
-        ) : !loading && (
-          <div className="h-full flex flex-col items-center justify-center text-center gap-3">
-             <div className="w-12 h-12 rounded-full bg-white/[0.02] border border-white/5 flex items-center justify-center">
-                <Play className="w-5 h-5 text-slate-700 ml-1 opacity-20" />
-             </div>
-             <div className="space-y-1">
-               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Awaiting Signal</p>
-               <p className="text-[10px] text-slate-600 max-w-[150px] leading-relaxed mx-auto">Select a target variable and an algorithm to start computation.</p>
-             </div>
+        ) : (
+          <div className="space-y-6">
+            {/* QUALITY COMPARISON SECTION (Shown even if model isn't trained yet) */}
+            {qualityMetricsPre && (
+              <div className="space-y-4 animate-in fade-in duration-500">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-emerald-400" />
+                  <span className="text-[13px] font-bold text-slate-100 tracking-tight">Data Quality Comparison</span>
+                </div>
+                
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <MetricComparisonCard 
+                    label="Completeness" 
+                    before={qualityMetricsPre.completeness} 
+                    after={qualityMetricsPost?.completeness} 
+                  />
+                  <MetricComparisonCard 
+                    label="Validity" 
+                    before={qualityMetricsPre.validity} 
+                    after={qualityMetricsPost?.validity} 
+                  />
+                  <MetricComparisonCard 
+                    label="Consistency" 
+                    before={qualityMetricsPre.consistency} 
+                    after={qualityMetricsPost?.consistency} 
+                  />
+                  <MetricComparisonCard 
+                    label="Uniqueness" 
+                    before={qualityMetricsPre.uniqueness} 
+                    after={qualityMetricsPost?.uniqueness} 
+                  />
+                  <MetricComparisonCard 
+                    label="Accuracy" 
+                    before={qualityMetricsPre.accuracy} 
+                    after={qualityMetricsPost?.accuracy} 
+                  />
+                  <MetricComparisonCard 
+                    label="Structural" 
+                    before={qualityMetricsPre.structural} 
+                    after={qualityMetricsPost?.structural} 
+                  />
+                </div>
+              </div>
+            )}
+
+            {!loading && !metrics && (
+              <div className="h-[200px] flex flex-col items-center justify-center text-center gap-3">
+                 <div className="w-12 h-12 rounded-full bg-white/[0.02] border border-white/5 flex items-center justify-center">
+                    <Play className="w-5 h-5 text-slate-700 ml-1 opacity-20" />
+                 </div>
+                 <div className="space-y-1">
+                   <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Model Training Needed</p>
+                   <p className="text-[10px] text-slate-600 max-w-[150px] leading-relaxed mx-auto">Select a target variable to see advanced ML performance scores.</p>
+                 </div>
+              </div>
+            )}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function MetricComparisonCard({ label, before, after }: { label: string; before?: number; after?: number }) {
+  const b = before ?? 0;
+  const a = after ?? b;
+  const hasAfter = after !== undefined;
+  const improvement = hasAfter ? (a - b) : 0;
+  
+  return (
+    <div className="p-3 bg-white/[0.02] border border-white/5 rounded-xl space-y-2">
+      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{label}</p>
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <p className="text-[9px] text-slate-600 font-bold uppercase">Before</p>
+          <p className="text-sm font-black text-slate-300 font-mono">{(b * 100).toFixed(1)}%</p>
+        </div>
+        {hasAfter && (
+          <>
+            <div className="w-px h-6 bg-white/5" />
+            <div className="space-y-0.5 text-right">
+              <p className="text-[9px] text-emerald-500/70 font-bold uppercase">After</p>
+              <p className="text-sm font-black text-emerald-400 font-mono">{(a * 100).toFixed(1)}%</p>
+            </div>
+          </>
+        )}
+      </div>
+      {hasAfter && improvement !== 0 && (
+        <p className={`text-[9px] font-bold ${improvement > 0 ? "text-emerald-500" : "text-red-500"}`}>
+          {improvement > 0 ? "↑" : "↓"} {Math.abs(improvement * 100).toFixed(1)}% shift
+        </p>
+      )}
     </div>
   );
 }

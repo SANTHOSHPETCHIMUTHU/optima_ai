@@ -6,7 +6,7 @@ import time
 import pandas as pd
 from io import BytesIO
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,13 +14,29 @@ from pydantic import BaseModel
 
 # Internal imports from our migrated modules
 from utils.data_profiler import load_and_preprocess, dataset_fingerprint
-from utils.ai_client import get_openrouter_client, plan_prompt, request_plan
+from utils.ai_client import get_client, plan_prompt, request_plan, request_ai
 from core.cleaning_engine import clean_dataframe, EngineConfig
 from core.metrics_engine import evaluate_model
 from core.knowledge_base import kb
+from core.auth import (
+    get_current_user, 
+    User,
+    Token
+)
+from core.quality_metrics import calculate_quality_metrics
 
-# ── CONFIGURATION ──
+# ── CONFIGURATION & MODELS ──
 load_dotenv()
+
+SUPPORTED_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+    "google/gemini-2.0-flash-exp:free",
+    "stepfun/step-1-8k",
+    "deepseek/deepseek-chat",
+    "meta-llama/llama-3.1-405b-instruct:free",
+]
 
 app = FastAPI(title="Optima AI Backend", version="1.0.0")
 
@@ -80,6 +96,16 @@ class LearnRequest(BaseModel):
 
 class VerifyRequest(BaseModel):
     pattern_id: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+class QualityMetricsRequest(BaseModel):
+    file_path: str
 
 # ── HELPERS ──
 def _generate_python_script(original_file_path: str, actions_applied: list, plan_actions: list) -> str:
@@ -150,10 +176,66 @@ def _generate_python_script(original_file_path: str, actions_applied: list, plan
     
     return "\n".join(lines)
 
+def _generate_cleaning_summary(actions_applied: list, metrics_pre: dict, metrics_post: dict) -> str:
+    """Generates a structured cleaning report summary."""
+    summary = [
+        "# Optima AI — Cleaning Report",
+        "",
+        "## Executive Summary",
+        f"Successfully executed {len(actions_applied)} cleaning actions.",
+        "",
+        "## Data Quality Shift",
+        f"- **Initial Quality Score:** {metrics_pre.get('overall_score', 0):.2%}",
+        f"- **Cleaned Quality Score:** {metrics_post.get('overall_score', 0):.2%}",
+        f"- **Improvement:** {(metrics_post.get('overall_score', 0) - metrics_pre.get('overall_score', 0)):.2%}",
+        "",
+        "## Actions Log",
+    ]
+    for action in actions_applied:
+        summary.append(f"- ✅ **{action}**: Successfully applied and verified.")
+    
+    summary.extend([
+        "",
+        "## Verification Report",
+    ])
+    
+    # Simple verification logic: check if scores are below 80%
+    missed_steps = []
+    if metrics_post.get('completeness', 1) < 0.8: missed_steps.append("Impute missing values")
+    if metrics_post.get('validity', 1) < 0.8: missed_steps.append("Address data validation errors")
+    if metrics_post.get('consistency', 1) < 0.8: missed_steps.append("Resolve formatting inconsistencies")
+    
+    if missed_steps:
+        summary.append(f"⚠️ **Notice**: Some indicators remain below threshold ({metrics_post.get('overall_score', 0):.1%}).")
+        summary.append("Suggested follow-up: " + ", ".join(missed_steps))
+    else:
+        summary.append("✅ **All indicators verified** against standard quality thresholds.")
+
+    summary.extend([
+        "",
+        "## Flow & Logic",
+        "1. Raw Data Ingestion",
+        "2. AI Diagnosis & Pattern Matching",
+        "3. Pipeline Execution (Normalization → Coersion → Imputation)",
+        "4. Post-Cleaning Validation",
+        "",
+        "## Suggested Use Cases",
+        "- Machine Learning Training",
+        "- Business Intelligence Dashboards",
+        "- Regulatory Reporting",
+    ])
+    return "\n".join(summary)
+
 # ── ENDPOINTS ──
 @app.get("/")
 def health_check():
     return {"status": "Optima Data Engine is online."}
+
+# ── AUTH ENDPOINTS ──
+@app.get("/api/me", response_model=User)
+def get_me(user: User = Depends(get_current_user)):
+    """Verifies the Supabase session token and returns user details."""
+    return user
 
 @app.post("/api/upload")
 def upload_file(file: UploadFile = File(...)):
@@ -203,12 +285,14 @@ def analyze_data(req: AnalyzeRequest):
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key required.")
     
-    client = get_openrouter_client(api_key)
     prompt = plan_prompt(req.fingerprint)
     
     try:
-        plan, explanation = request_plan(client, prompt)
+        plan, explanation, fallback_note = request_plan(prompt, model_id=req.model or SUPPORTED_MODELS[0])
         print(f"DEBUG: Analyze (AI Plan) took {time.time() - start_time:.4f}s")
+        if fallback_note:
+            explanation = f"{fallback_note}\n\n{explanation}"
+            
         return {
             "plan": plan,
             "explanation": explanation
@@ -223,65 +307,29 @@ def diagnose_data(req: AnalyzeRequest):
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key required.")
 
-    # All free models — preferred first. If user selected one, try it first.
-    ALL_MODELS = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-    ]
-    # Put the user's chosen model first in the retry queue
-    preferred = req.model if req.model and req.model in ALL_MODELS else ALL_MODELS[0]
-    model_queue = [preferred] + [m for m in ALL_MODELS if m != preferred]
-
-    client = get_openrouter_client(api_key)
-    last_error = "Unknown error"
-
-    for model in model_queue:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are 'Optima AI', an expert data analyst. Analyze the dataset fingerprint, detect problems, and provide a structured data health report."
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Analyze this dataset fingerprint:\n{json.dumps(req.fingerprint)}\n\n"
-                            "Provide a structured report covering:\n"
-                            "1. **Data Health Score & Initial Scan** — overall quality score out of 10\n"
-                            "2. **Column-level Profile** — type, null %, unique count, problems per column\n"
-                            "3. **Detected Issues** — missing data, duplicates, outliers, type mismatches\n"
-                            "4. **Recommended Cleaning Workflow** — step-by-step actions to take"
-                        )
-                    }
-                ]
-            )
-            return {
-                "report": response.choices[0].message.content,
-                "model_used": model
-            }
-        except Exception as e:
-            err_str = str(e)
-            last_error = err_str
-            # 429 = rate limit — try next model. Other errors also fall through.
-            if "429" in err_str or "rate" in err_str.lower() or "upstream" in err_str.lower():
-                continue  # try the next model in the queue
-            else:
-                # Non-rate-limit error — no point retrying (auth issue, bad request, etc.)
-                raise HTTPException(status_code=500, detail=f"AI Engine error: {err_str}")
-
-    # All models exhausted
-    raise HTTPException(
-        status_code=429,
-        detail=(
-            "⚠️ All free AI models are currently rate-limited. "
-            "Please wait 30–60 seconds and try again. "
-            f"Last error: {last_error}"
-        )
+    prompt = (
+        f"Analyze this dataset fingerprint:\n{json.dumps(req.fingerprint)}\n\n"
+        "Provide a structured report covering:\n"
+        "1. **Data Health Score & Initial Scan** — overall quality score out of 10\n"
+        "2. **Column-level Profile** — type, null %, unique count, problems per column\n"
+        "3. **Detected Issues** — missing data, duplicates, outliers, type mismatches\n"
+        "4. **Recommended Cleaning Workflow** — step-by-step actions to take"
     )
+    system_prompt = "You are 'Optima AI', an expert data analyst. Analyze the dataset fingerprint, detect problems, and provide a structured data health report."
+    
+    try:
+        content, fallback_note = request_ai(f"{system_prompt}\n\n{prompt}", model_id=req.model or SUPPORTED_MODELS[0])
+        
+        report = content
+        if fallback_note:
+            report = f"{fallback_note}\n\n{report}"
+            
+        return {
+            "report": report,
+            "model_used": req.model if not fallback_note else "Fallback"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/clean")
 def clean_dataset(req: CleanRequest):
@@ -291,7 +339,6 @@ def clean_dataset(req: CleanRequest):
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key required.")
     
-    client = get_openrouter_client(api_key)
     prompt = plan_prompt(req.fingerprint)
     
     try:
@@ -311,7 +358,9 @@ def clean_dataset(req: CleanRequest):
             used_learned_fix = True
         else:
             # 1. Get the plan from AI (with multi-model fallback built-in)
-            plan, explanation = request_plan(client, prompt)
+            plan, explanation, fallback_note = request_plan(prompt, model_id=req.model or SUPPORTED_MODELS[0])
+            if fallback_note:
+                explanation = f"{fallback_note}\n\n{explanation}"
 
         # Filter to only enabled actions if the user toggled any off
         if req.enabled_actions is not None and isinstance(plan.get("actions"), list):
@@ -335,9 +384,8 @@ def clean_dataset(req: CleanRequest):
         
         # 5. Save the cleaned CSV into the uploads directory (basename only)
         base_name = os.path.splitext(os.path.basename(req.file_path))[0]
-        cleaned_filename = f"{base_name}_cleaned.csv"
-        cleaned_file_path = os.path.join(UPLOAD_DIR, cleaned_filename)
-        cleaned_df.to_csv(cleaned_file_path, index=False, encoding="utf-8")
+        cleaned_filename = os.path.join(UPLOAD_DIR, f"{base_name}_cleaned.csv")
+        cleaned_df.to_csv(cleaned_filename, index=False, encoding="utf-8")
         
         # 6. Build a reproducible Python script from executed actions
         actions_applied = report.get("actions_applied", [])
@@ -357,13 +405,25 @@ def clean_dataset(req: CleanRequest):
         with open(script_file_path, "w", encoding="utf-8") as f:
             f.write(python_script_content)
 
+        # 7. Generate Quality Metrics
+        metrics_pre = calculate_quality_metrics(df)
+        metrics_post = calculate_quality_metrics(cleaned_df)
+        
+        # 8. Build a cleaning summary report
+        cleaning_summary = _generate_cleaning_summary(actions_applied, metrics_pre, metrics_post)
+
         return {
             "message": "Data cleaned successfully",
             "cleaning_report": script_filename,
+            "cleaning_summary": cleaning_summary,
             "explanation": explanation,
             "used_kb": used_learned_fix,
             "plan": plan,
             "python_code": python_script_content,
+            "quality_metrics": {
+                "initial": metrics_pre,
+                "cleaned": metrics_post
+            },
             "cleaned_data": {
                 "file_path": cleaned_filename,
                 "shape": cleaned_fingerprint["shape"],
@@ -417,18 +477,19 @@ def chat_with_data(req: ChatRequest):
         raise HTTPException(status_code=401, detail="API Key required.")
     
     # Use the model the user selected, fall back to a default
-    SUPPORTED_MODELS = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it"
-    ]
-    DEFAULT_MODEL = "llama-3.3-70b-versatile"
-    model = req.model if req.model and req.model in SUPPORTED_MODELS else DEFAULT_MODEL
+    model = req.model if req.model and req.model in SUPPORTED_MODELS else SUPPORTED_MODELS[0]
     
-    client = get_openrouter_client(api_key)
+    client = get_client(model, api_key)
     # ── CONSTRUCT PROMPT ──
     # Start with basic summary context
+    quality_metrics = {}
+    if req.file_path and os.path.exists(req.file_path):
+        try:
+            df_temp = pd.read_csv(req.file_path)
+            quality_metrics = calculate_quality_metrics(df_temp)
+        except:
+            pass
+
     full_context = f"""
 You are 'Optima AI', an autonomous data-assistant that helps users analyze, clean, and understand their datasets.
 Current Dataset State: {req.dataset_state}
@@ -437,6 +498,14 @@ Data Overview:
 Shape: {req.data_info.get('shape')}
 Null Counts: {req.data_info.get('null_counts')}
 
+Quality Metrics:
+- Completeness: {quality_metrics.get('completeness', 0):.2%}
+- Validity: {quality_metrics.get('validity', 0):.2%}
+- Consistency: {quality_metrics.get('consistency', 0):.2%}
+- Uniqueness: {quality_metrics.get('uniqueness', 0):.2%}
+- Accuracy: {quality_metrics.get('accuracy', 0):.2%}
+- Structural: {quality_metrics.get('structural', 0):.2%}
+
 Detailed Summary & Safe Sample:
 {req.safe_summary}
 """
@@ -444,10 +513,25 @@ Detailed Summary & Safe Sample:
     # Add more rows from the actual file if path is provided
     if req.file_path and os.path.exists(req.file_path):
         try:
-            # Load first 100 rows to provide much better context than the 10-row fingerprint
-            df_full = pd.read_csv(req.file_path, nrows=100)
-            data_md = df_full.to_markdown(index=False)
-            full_context += f"\n\nREAL DATA CONTEXT (First 100 Rows):\n{data_md}"
+            # Load the entire dataset to compute full statistics
+            df_full = pd.read_csv(req.file_path)
+            total_rows = len(df_full)
+            
+            if total_rows <= 1000:
+                # Small enough to send the whole thing (most modern LLMs handle this well)
+                data_md = df_full.to_markdown(index=False)
+                full_context += f"\n\nFULL DATA CONTEXT ({total_rows} rows):\n{data_md}"
+            else:
+                # Large dataset: Provide statistics for ALL rows + Head/Tail samples
+                stats_md = df_full.describe(include='all').to_markdown()
+                head_md = df_full.head(200).to_markdown(index=False)
+                tail_md = df_full.tail(200).to_markdown(index=False)
+                
+                full_context += f"\n\nDATA OVERVIEW (Full Dataset of {total_rows} rows):"
+                full_context += f"\n\nDESCRIPTIVE STATISTICS (Calculated from all rows):\n{stats_md}"
+                full_context += f"\n\nSAMPLE (First 200 Rows):\n{head_md}"
+                full_context += f"\n\nSAMPLE (Last 200 Rows):\n{tail_md}"
+                full_context += "\n\nNote: The above samples are representative. Descriptive statistics cover the entire dataset."
         except Exception as e:
             print(f"DEBUG: Could not load full CSV for chat: {e}")
 
@@ -465,15 +549,13 @@ Instructions:
 """
     
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": full_context},
-                {"role": "user", "content": req.prompt}
-            ],
-            temperature=0.7
-        )
-        return {"reply": response.choices[0].message.content}
+        content, fallback_note = request_ai(f"{full_context}\n\nUser: {req.prompt}", model_id=model)
+        
+        reply = content
+        if fallback_note:
+            reply = f"{fallback_note}\n\n{reply}"
+            
+        return {"reply": reply}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Engine Error: {str(e)}")
 
@@ -482,11 +564,15 @@ Instructions:
 def compute_metrics(req: MetricsRequest):
     """Trains a model and returns standard quality metrics."""
     try:
-        # file_path in req might be just the filename if it was cleaned
-        # We need the full path in the uploads directory
+        # The file_path from frontend already includes 'uploads/'
         full_path = req.file_path
-        if not os.path.isabs(full_path):
-            full_path = os.path.join(UPLOAD_DIR, req.file_path)
+        if not os.path.exists(full_path):
+            # Fallback for old sessions or different pathing
+            alt_path = os.path.join(UPLOAD_DIR, os.path.basename(req.file_path))
+            if os.path.exists(alt_path):
+                full_path = alt_path
+            else:
+                raise HTTPException(status_code=404, detail=f"File not found at {full_path}")
             
         results = evaluate_model(
             file_path=full_path,
@@ -497,3 +583,21 @@ def compute_metrics(req: MetricsRequest):
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Metrics Error: {str(e)}")
+
+@app.post("/api/quality-metrics")
+def get_quality_metrics(req: QualityMetricsRequest):
+    """Calculates data quality scores for a given CSV file."""
+    try:
+        full_path = req.file_path
+        if not os.path.exists(full_path):
+            alt_path = os.path.join(UPLOAD_DIR, os.path.basename(req.file_path))
+            if os.path.exists(alt_path):
+                full_path = alt_path
+            else:
+                raise HTTPException(status_code=404, detail=f"File not found at {full_path}")
+            
+        df = pd.read_csv(full_path)
+        metrics = calculate_quality_metrics(df)
+        return metrics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quality Metrics Error: {str(e)}")

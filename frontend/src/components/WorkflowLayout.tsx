@@ -79,23 +79,67 @@ export default function WorkflowLayout({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
+  const [leftWidth, setLeftWidth] = useState(380);
+  const [isResizing, setIsResizing] = useState(false);
+
+  const startResizing = useCallback(() => {
+    setIsResizing(true);
+  }, []);
+
+  const stopResizing = useCallback(() => {
+    setIsResizing(false);
+  }, []);
+
+  const resize = useCallback(
+    (e: MouseEvent) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX - 240; // Sidebar is ~240 or 60
+      if (newWidth > 300 && newWidth < 800) {
+        setLeftWidth(newWidth);
+      }
+    },
+    [isResizing]
+  );
+
+  useEffect(() => {
+    if (isResizing) {
+      window.addEventListener("mousemove", resize);
+      window.addEventListener("mouseup", stopResizing);
+    } else {
+      window.removeEventListener("mousemove", resize);
+      window.removeEventListener("mouseup", stopResizing);
+    }
+    return () => {
+      window.removeEventListener("mousemove", resize);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+  }, [isResizing, resize, stopResizing]);
+
   return (
     <>
       <HelpModal isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
 
-      {/*
-       * Two-column split layout.
-       * `min-h-0` on the flex children is critical: it lets them shrink below their
-       * natural content height, which enables the inner scroll areas to work correctly.
-       */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className={`flex flex-1 overflow-hidden ${isResizing ? "select-none cursor-col-resize" : ""}`}>
         {/* LEFT: Chat */}
-        <div className="flex flex-col min-h-0 w-[380px] flex-shrink-0 border-r border-white/5">
+        <div 
+          className="flex flex-col min-h-0 flex-shrink-0"
+          style={{ width: `${leftWidth}px` }}
+        >
           {left}
         </div>
 
+        {/* RESIZER DIVIDER */}
+        <div
+          onMouseDown={startResizing}
+          className={`
+            w-1 hover:w-1.5 transition-all cursor-col-resize flex-shrink-0 bg-white/5 
+            hover:bg-blue-500/50 z-10
+            ${isResizing ? "bg-blue-500/50 w-1.5" : ""}
+          `}
+        />
+
         {/* RIGHT: Data Panels */}
-        <div className="flex flex-col min-h-0 flex-1 overflow-hidden">
+        <div className="flex flex-col min-h-0 flex-1 overflow-hidden border-l border-white/5">
           {right}
         </div>
       </div>

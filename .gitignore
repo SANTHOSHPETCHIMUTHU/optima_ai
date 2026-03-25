@@ -1,11 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+**/__pycache__/
+
 # Environments
 .env
 .env.local
 .venv/
 venv/
 backend/venv/
-backend/__pycache__/
-backend/*.pyc
 
 # Dependencies
 node_modules/
